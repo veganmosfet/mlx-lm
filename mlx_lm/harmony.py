@@ -4,15 +4,6 @@ from typing import Dict, List, Optional, Sequence
 
 
 @dataclass
-class HarmonyAdapterConfig:
-    """
-    Configuration for adapting OpenAI Harmony formatted prompts and responses.
-    """
-    reasoning: str = "high"
-    valid_channels: str = "analysis, commentary, final"
-
-
-@dataclass
 class HarmonyMessage:
     role: str = ""
     channel: Optional[str] = None
@@ -215,9 +206,8 @@ class HarmonyAdapter:
 
     STOP_TOKENS = ("<|return|>", "<|call|>")
 
-    def __init__(self, tokenizer, config: HarmonyAdapterConfig):
+    def __init__(self, tokenizer):
         self.tokenizer = tokenizer
-        self.config = config
         self.special_token_ids = {
             "<|start|>": self._token_id("<|start|>"),
             "<|end|>": self._token_id("<|end|>"),
