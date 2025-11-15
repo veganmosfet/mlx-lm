@@ -29,7 +29,7 @@ from huggingface_hub import scan_cache_dir
 
 from ._version import __version__
 from .generate import stream_generate
-from .harmony import HarmonyAdapter, HarmonyAdapterConfig
+from .harmony import HarmonyAdapter
 from .models.cache import can_trim_prompt_cache, make_prompt_cache, trim_prompt_cache
 from .sample_utils import make_logits_processors, make_sampler
 from .utils import common_prefix_len, load
@@ -456,13 +456,6 @@ class APIHandler(BaseHTTPRequestHandler):
         enabled = self.model_provider.cli_args.enable_harmony_adapter
         self.use_harmony_adapter = bool(enabled)
         self.harmony_adapter = None
-
-    def _make_harmony_config(self) -> HarmonyAdapterConfig:
-        args = self.model_provider.cli_args
-        return HarmonyAdapterConfig(
-            args.harmony_reasoning,
-            args.harmony_valid_channels
-        )
 
     def generate_response(
         self,
@@ -907,8 +900,7 @@ class APIHandler(BaseHTTPRequestHandler):
         self.request_id = f"chatcmpl-{uuid.uuid4()}"
         self.object_type = "chat.completion.chunk" if self.stream else "chat.completion"
         if self.use_harmony_adapter:
-            harmony_config = self._make_harmony_config()
-            self.harmony_adapter = HarmonyAdapter(self.tokenizer, harmony_config)
+            self.harmony_adapter = HarmonyAdapter(self.tokenizer)
         if self.tokenizer.chat_template:
             messages = body["messages"]
             process_message_content(messages)
@@ -1103,19 +1095,6 @@ def main():
         action="store_true",
         help="Render prompts/responses using the OpenAI Harmony format",
     )    
-    parser.add_argument(
-        "--harmony-reasoning",
-        type=str,
-        default="low",
-        choices=["low", "medium", "high"],
-        help="Reasoning level declared inside the Harmony system message",
-    )
-    parser.add_argument(
-        "--harmony-valid-channels",
-        type=str,
-        default="analysis, commentary, final",
-        help="List of valid channels injected into the Harmony system message",
-    )
     parser.add_argument(
         "--temp",
         type=float,
