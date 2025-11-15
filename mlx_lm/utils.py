@@ -54,6 +54,26 @@ MODEL_REMAPPING = {
 
 MAX_FILE_SIZE_GB = 5
 
+def _merge_token_id_values(*values):
+    """
+    Merge eos token id definitions that may be ints or sequences.
+    """
+    merged = []
+    seen = set()
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            candidates = value
+        else:
+            candidates = [value]
+        for token in candidates:
+            if token is None or token in seen:
+                continue
+            seen.add(token)
+            merged.append(token)
+    return merged or None
+
 
 def _get_classes(config: dict):
     """
@@ -318,8 +338,24 @@ def load(
     if adapter_path is not None:
         model = load_adapters(model, adapter_path)
         model.eval()
+    generation_eos_token_ids = None
+    generation_config_path = model_path / "generation_config.json"
+    if generation_config_path.exists():
+        try:
+            with open(generation_config_path, "r", encoding="utf-8") as fid:
+                generation_config = json.load(fid)
+            generation_eos_token_ids = generation_config.get("eos_token_id")
+        except (OSError, json.JSONDecodeError) as exc:
+            logging.warning(
+                "Failed to read generation_config at %s: %s",
+                generation_config_path,
+                exc,
+            )
+    eos_token_ids = _merge_token_id_values(
+        config.get("eos_token_id", None), generation_eos_token_ids
+    )
     tokenizer = load_tokenizer(
-        model_path, tokenizer_config, eos_token_ids=config.get("eos_token_id", None)
+        model_path, tokenizer_config, eos_token_ids=eos_token_ids
     )
 
     if return_config:
