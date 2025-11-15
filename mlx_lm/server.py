@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import (
     Any,
+    Collection,
     Dict,
     List,
     Literal,
