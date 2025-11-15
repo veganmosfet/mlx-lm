@@ -659,6 +659,11 @@ class APIHandler(BaseHTTPRequestHandler):
             self.reset_prompt_cache(prompt)
 
         logging.debug(f"Returning {len(prompt)} tokens for processing.")
+
+        logging.info("PROMPT")           
+        logging.info(self.tokenizer.decode(prompt))
+        logging.info("***")     
+
         return prompt
 
     def handle_completion(
@@ -804,6 +809,10 @@ class APIHandler(BaseHTTPRequestHandler):
                     segment = ""
                     tool_calls = []
 
+        logging.info("RESPONSE")           
+        logging.info(text)
+        logging.info("***")     
+                     
         if gen_response.finish_reason is not None:
             finish_reason = gen_response.finish_reason
 
@@ -819,7 +828,6 @@ class APIHandler(BaseHTTPRequestHandler):
             harmony_reasoning = parsed.analysis
             if harmony_reasoning:
                 reasoning_output = "\n".join(harmony_reasoning)
-                logging.info("Harmony analysis:\n%s", reasoning_output)
             if parsed.finish_reason:
                 finish_reason = parsed.finish_reason
 
