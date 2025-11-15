@@ -29,6 +29,7 @@ from huggingface_hub import scan_cache_dir
 
 from ._version import __version__
 from .generate import stream_generate
+from .harmony import HarmonyAdapter, HarmonyAdapterConfig
 from .models.cache import can_trim_prompt_cache, make_prompt_cache, trim_prompt_cache
 from .sample_utils import make_logits_processors, make_sampler
 from .utils import common_prefix_len, load
@@ -250,6 +251,8 @@ class APIHandler(BaseHTTPRequestHandler):
         self.model_provider = model_provider
         self.prompt_cache = prompt_cache or PromptCache()
         self.system_fingerprint = system_fingerprint or get_system_fingerprint()
+        self.harmony_adapter = None
+        self.use_harmony_adapter = False
         super().__init__(*args, **kwargs)
 
     def _set_cors_headers(self):
@@ -306,6 +309,19 @@ class APIHandler(BaseHTTPRequestHandler):
         assert isinstance(
             self.body, dict
         ), f"Request should be dict, but got {type(self.body)}"
+
+        try:
+            self._configure_harmony_adapter()
+        except ValueError as exc:
+            if self.stream:
+                self._set_stream_headers(400)
+                self.wfile.write(
+                    f"data: {json.dumps({'error': str(exc)})}\n\n".encode()
+                )
+            else:
+                self._set_completion_headers(400)
+                self.wfile.write(json.dumps({"error": str(exc)}).encode())
+            return
 
         # Extract request parameters from the body
         self.stream = self.body.get("stream", False)
@@ -435,6 +451,18 @@ class APIHandler(BaseHTTPRequestHandler):
             raise ValueError("adapter must be a string")
         if self.seed is not None and not isinstance(self.seed, int):
             raise ValueError("seed must be an integer")
+        
+    def _configure_harmony_adapter(self):
+        enabled = self.model_provider.cli_args.enable_harmony_adapter
+        self.use_harmony_adapter = bool(enabled)
+        self.harmony_adapter = None
+
+    def _make_harmony_config(self) -> HarmonyAdapterConfig:
+        args = self.model_provider.cli_args
+        return HarmonyAdapterConfig(
+            args.harmony_reasoning,
+            args.harmony_valid_channels
+        )
 
     def generate_response(
         self,
@@ -446,6 +474,7 @@ class APIHandler(BaseHTTPRequestHandler):
         top_tokens: Optional[List[Dict[int, float]]] = None,
         tokens: Optional[List[int]] = None,
         tool_calls: Optional[List[str]] = None,
+        reasoning_content: Optional[List[str]] = None,
     ) -> dict:
         """
         Generate a single response packet based on response type (stream or
@@ -473,6 +502,7 @@ class APIHandler(BaseHTTPRequestHandler):
         token_logprobs = token_logprobs or []
         top_logprobs = top_tokens or []
         tool_calls = tool_calls or []
+        reasoning_content = [chunk for chunk in (reasoning_content or []) if chunk]
 
         def parse_function(tool_text):
             tool_call = json.loads(tool_text.strip())
@@ -527,11 +557,20 @@ class APIHandler(BaseHTTPRequestHandler):
         # Add dynamic response
         if self.object_type.startswith("chat.completion"):
             key_name = "delta" if self.stream else "message"
+            tool_entries = []
+            for tool_text in tool_calls:
+                tool_entry = parse_function(tool_text)
+                tool_name = tool_entry.get("function", {}).get("name")
+                if tool_name and tool_name.startswith("functions."):
+                    tool_entry["function"]["name"] = tool_name.split("functions.", 1)[1]
+                tool_entries.append(tool_entry)
             choice[key_name] = {
                 "role": "assistant",
                 "content": text,
-                "tool_calls": [parse_function(tool_text) for tool_text in tool_calls],
+                "tool_calls": tool_entries,
             }
+            if reasoning_content:
+                choice[key_name]["reasoning_content"] = reasoning_content
         elif self.object_type == "text_completion":
             choice.update(text=text)
         else:
@@ -672,6 +711,7 @@ class APIHandler(BaseHTTPRequestHandler):
         tool_text = ""
         in_tool_call = False
         segment = ""
+        harmony_reasoning = []
 
         # Create keepalive callback to send SSE comments during long prompt processing
         def keepalive_callback(processed_tokens, total_tokens):
@@ -771,9 +811,24 @@ class APIHandler(BaseHTTPRequestHandler):
         logging.debug(f"Generation: {gen_response.generation_tps:.3f} tokens-per-sec")
         logging.debug(f"Peak memory: {gen_response.peak_memory:.3f} GB")
 
+        if self.harmony_adapter is not None:
+            parsed = self.harmony_adapter.parse_tokens(tokens)
+            text = parsed.text
+            segment = text
+            tool_calls = parsed.tool_call_payloads
+            harmony_reasoning = parsed.analysis
+            if harmony_reasoning:
+                reasoning_output = "\n".join(harmony_reasoning)
+                logging.info("Harmony analysis:\n%s", reasoning_output)
+            if parsed.finish_reason:
+                finish_reason = parsed.finish_reason
+
         if self.stream:
             response = self.generate_response(
-                segment, finish_reason, tool_calls=tool_calls
+                segment,
+                finish_reason,
+                tool_calls=tool_calls,
+                reasoning_content=harmony_reasoning,
             )
             self.wfile.write(f"data: {json.dumps(response)}\n\n".encode())
             self.wfile.flush()
@@ -798,6 +853,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 top_tokens=top_tokens,
                 tokens=tokens,
                 tool_calls=tool_calls,
+                reasoning_content=harmony_reasoning,
             )
             response_json = json.dumps(response).encode()
             indent = "\t"  # Backslashes can't be inside of f-strings
@@ -842,6 +898,9 @@ class APIHandler(BaseHTTPRequestHandler):
         # Determine response type
         self.request_id = f"chatcmpl-{uuid.uuid4()}"
         self.object_type = "chat.completion.chunk" if self.stream else "chat.completion"
+        if self.use_harmony_adapter:
+            harmony_config = self._make_harmony_config()
+            self.harmony_adapter = HarmonyAdapter(self.tokenizer, harmony_config)
         if self.tokenizer.chat_template:
             messages = body["messages"]
             process_message_content(messages)
@@ -1030,6 +1089,24 @@ def main():
         "--use-default-chat-template",
         action="store_true",
         help="Use the default chat template",
+    )
+    parser.add_argument(
+        "--enable-harmony-adapter",
+        action="store_true",
+        help="Render prompts/responses using the OpenAI Harmony format",
+    )    
+    parser.add_argument(
+        "--harmony-reasoning",
+        type=str,
+        default="low",
+        choices=["low", "medium", "high"],
+        help="Reasoning level declared inside the Harmony system message",
+    )
+    parser.add_argument(
+        "--harmony-valid-channels",
+        type=str,
+        default="analysis, commentary, final",
+        help="List of valid channels injected into the Harmony system message",
     )
     parser.add_argument(
         "--temp",
