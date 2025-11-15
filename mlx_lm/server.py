@@ -46,7 +46,7 @@ class StopCondition(NamedTuple):
 def stopping_criteria(
     tokens: List[int],
     stop_id_sequences: List[List[int]],
-    eos_token_id: Union[int, None],
+    eos_token_ids: Optional[Collection[int]],
 ) -> StopCondition:
     """
     Determines whether the token generation should stop based on predefined
@@ -57,16 +57,16 @@ def stopping_criteria(
         stop_id_sequences (List[List[[int]]): A list of integer lists, each
           representing a sequence of token IDs. If the end of the `tokens`
           list matches any of these sequences, the generation should stop.
-        eos_token_id (Union[int, None]): The token ID that represents the
-          end-of-sequence. If the last token in `tokens` matches this, the
-          generation should stop.
+        eos_token_ids (Optional[Collection[int]]): The token IDs that represent
+          the end-of-sequence. If the last token in `tokens` matches any of
+          these, the generation should stop.
 
     Returns:
         StopCondition: A named tuple indicating whether the stop condition has
           been met (`stop_met`) and how many tokens should be trimmed from the
           end if it has (`trim_length`).
     """
-    if tokens and tokens[-1] == eos_token_id:
+    if eos_token_ids and tokens and tokens[-1] in eos_token_ids:
         return StopCondition(stop_met=True, trim_length=0)
 
     for stop_ids in stop_id_sequences:
@@ -732,7 +732,7 @@ class APIHandler(BaseHTTPRequestHandler):
             token_logprobs.append(logprobs[token].item())
 
             stop_condition = stopping_criteria(
-                tokens, stop_id_sequences, self.tokenizer.eos_token_id
+                tokens, stop_id_sequences, self.tokenizer.eos_token_ids
             )
             if stop_condition.stop_met:
                 finish_reason = "stop"
