@@ -30,6 +30,7 @@ setup(
         "protobuf",
         "pyyaml",
         "jinja2",
+        "openai_harmony",
     ],
     packages=["mlx_lm", "mlx_lm.models", "mlx_lm.quant", "mlx_lm.tuner"],
     python_requires=">=3.8",
